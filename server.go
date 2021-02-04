@@ -375,6 +375,11 @@ type Server struct {
 	// which will close it when needed.
 	KeepHijackedConns bool
 
+	// StreamRequestBody enables request body streaming,
+	// and calls the handler sooner when given body is
+	// larger then the current limit.
+	StreamRequestBody bool
+
 	tlsConfig  *tls.Config
 	nextProtos map[string]ServeHandler
 
@@ -2064,7 +2069,11 @@ func (s *Server) serveConn(c net.Conn) (err error) {
 					}
 				}
 				//read body
-				err = ctx.Request.readLimitBody(br, maxRequestBodySize, s.GetOnly, !s.DisablePreParseMultipartForm)
+				if s.StreamRequestBody {
+					err = ctx.Request.readBodyStream(br, maxRequestBodySize, s.GetOnly, !s.DisablePreParseMultipartForm)
+				} else {
+					err = ctx.Request.readLimitBody(br, maxRequestBodySize, s.GetOnly, !s.DisablePreParseMultipartForm)
+				}
 			}
 
 			if err == nil {
@@ -2139,7 +2148,11 @@ func (s *Server) serveConn(c net.Conn) (err error) {
 					br = acquireReader(ctx)
 				}
 
-				err = ctx.Request.ContinueReadBody(br, maxRequestBodySize, !s.DisablePreParseMultipartForm)
+				if s.StreamRequestBody {
+					err = ctx.Request.ContinueReadBodyStream(br, maxRequestBodySize, !s.DisablePreParseMultipartForm)
+				} else {
+					err = ctx.Request.ContinueReadBody(br, maxRequestBodySize, !s.DisablePreParseMultipartForm)
+				}
 				if (s.ReduceMemoryUsage && br.Buffered() == 0) || err != nil {
 					releaseReader(s, br)
 					br = nil
@@ -2266,6 +2279,12 @@ func (s *Server) serveConn(c net.Conn) (err error) {
 			go hijackConnHandler(hjr, c, s, hijackHandler)
 			err = errHijacked
 			break
+		}
+
+		if ctx.Request.bodyStream != nil {
+			if rs, ok := ctx.Request.bodyStream.(*requestStream); ok {
+				releaseRequestStream(rs)
+			}
 		}
 
 		s.setState(c, StateIdle)
